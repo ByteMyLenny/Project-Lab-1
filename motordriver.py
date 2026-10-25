@@ -11,27 +11,20 @@ GP16 = Pin(16, Pin.OUT)
 GP17 = Pin(17, Pin.OUT)
 
 for n in (14, 15, 16, 17):
-    set_drive(n, 3)    
+    set_drive(n, 0)    
 
-PINS = (GP14, GP15, GP16, GP17)
+#HIGH LOW HIGH LOW
+PINS = (GP14, GP15, GP17, GP16)
 
-Patterns = { "F" : (1,0,0,1),
-             "B" : (0,1,1,0),
-             "S" : (0,0,0,0),
-             "L" : (),
-             "R" : ()
+# F / B 
+Patterns = { "F" : (1,0,  1,0),
+             "B" : (0,1,  0,1),
+             "L" : (0,1,  1,0),
+             "R" : (1,0,  0,1),
+             "S" : (0,0,  0,0)
             }
 
 def movement(move):
      for pin, state in zip(PINS, Patterns[move]):
         pin.value(state)
-
-print("FORWARDS!")
-movement("F")
-sleep(5)
-print("BACKWARDS!")
-movement("B")
-sleep(5)
-movement("S")
-sleep(5)
 
