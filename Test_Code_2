@@ -1,0 +1,249 @@
+from machine import Pin, PWM
+import time
+
+# =====================================
+# MOTOR 1 - L293D
+# =====================================
+en1 = PWM(Pin(14))
+in1 = Pin(15, Pin.OUT)
+in2 = Pin(16, Pin.OUT)
+
+# =====================================
+# MOTOR 2 - L293D
+# =====================================
+en2 = PWM(Pin(20))
+in3 = Pin(18, Pin.OUT)
+in4 = Pin(19, Pin.OUT)
+
+# =====================================
+# SERVO MOTOR - GP21
+# =====================================
+servo = PWM(Pin(22))
+servo.freq(50)
+
+SERVO_START_ANGLE = 90
+SERVO_FORWARD_ANGLE = 170
+
+# =====================================
+# PWM SPEED SETTINGS
+# =====================================
+en1.freq(1000)
+en2.freq(1000)
+
+STARTUP_SPEED = 100
+DRIVE_SPEED = 55
+REVERSE_SPEED = 60
+
+BOOST_TIME = 0.2
+
+# Total reverse movement time
+REVERSE_TIME = 0.2
+
+# Part of reverse time spent at 100%
+REVERSE_BOOST_TIME = 0.05
+
+startup_duty = int(STARTUP_SPEED / 100 * 65535)
+drive_duty = int(DRIVE_SPEED / 100 * 65535)
+reverse_duty = int(REVERSE_SPEED / 100 * 65535)
+
+# =====================================
+# METAL DETECTOR - GP17
+# =====================================
+metal = Pin(17, Pin.IN, Pin.PULL_UP)
+
+# 0 = Metal detected
+# 1 = No metal detected
+
+# =====================================
+# SERVO CONTROL FUNCTION
+# =====================================
+def set_servo_angle(angle):
+
+    angle = max(0, min(180, angle))
+
+    # Standard servo pulse range:
+    # 1000 us = 0 degrees
+    # 1500 us = 90 degrees
+    # 2000 us = 180 degrees
+
+    pulse_us = 1000 + (angle / 180) * 1000
+
+    duty = int(pulse_us / 20000 * 65535)
+
+    servo.duty_u16(duty)
+
+
+# =====================================
+# SERVO MOVEMENT AFTER BACKUP
+# =====================================
+def activate_servo():
+
+    print("Activating servo...")
+
+    # Move servo forward
+    set_servo_angle(SERVO_FORWARD_ANGLE)
+
+    print("Servo moving to", SERVO_FORWARD_ANGLE)
+    time.sleep(1)
+
+    # Return servo to starting position
+    set_servo_angle(SERVO_START_ANGLE)
+
+    print("Servo returning to 90 degrees")
+    time.sleep(1)
+
+    # Stop sending servo PWM signals
+    servo.duty_u16(0)
+
+    print("Servo sequence complete.")
+
+
+# =====================================
+# STOP MOTORS
+# =====================================
+def stop():
+
+    en1.duty_u16(0)
+    en2.duty_u16(0)
+
+    in1.value(0)
+    in2.value(0)
+
+    in3.value(0)
+    in4.value(0)
+
+
+# =====================================
+# FORWARD FUNCTION
+# =====================================
+def forward():
+
+    in1.value(1)
+    in2.value(0)
+
+    in3.value(1)
+    in4.value(0)
+
+
+# =====================================
+# REVERSE FUNCTION
+# =====================================
+def reverse():
+
+    in1.value(0)
+    in2.value(1)
+
+    in3.value(0)
+    in4.value(1)
+
+
+# =====================================
+# REVERSE AFTER METAL DETECTION
+# =====================================
+def reverse_after_detection():
+
+    print("METAL DETECTED!")
+
+    # Stop before reversing
+    stop()
+    time.sleep(0.2)
+
+    print("Reversing for 0.2 seconds...")
+
+    reverse()
+
+    # Begin reverse timer
+    reverse_start = time.ticks_ms()
+
+    # Short 100% startup boost
+    en1.duty_u16(startup_duty)
+    en2.duty_u16(startup_duty)
+
+    time.sleep(REVERSE_BOOST_TIME)
+
+    # Reduce to 60% reverse speed
+    en1.duty_u16(reverse_duty)
+    en2.duty_u16(reverse_duty)
+
+    # Complete 0.2 seconds total reversing
+    while time.ticks_diff(
+        time.ticks_ms(), reverse_start
+    ) < int(REVERSE_TIME * 1000):
+
+        time.sleep_ms(1)
+
+    # Stop both motors
+    stop()
+
+    print("Reverse complete.")
+    print("Both motors stopped.")
+
+    # =================================
+    # ACTIVATE SERVO AFTER STOPPING
+    # =================================
+    activate_servo()
+
+
+# =====================================
+# MAIN PROGRAM
+# =====================================
+
+# Start safely
+stop()
+
+# Keep servo signal inactive initially
+servo.duty_u16(0)
+
+time.sleep(1)
+
+# Check if washer already detected
+if metal.value() == 0:
+
+    reverse_after_detection()
+
+else:
+
+    # Set both motors forward
+    forward()
+
+    print("Startup boost: 100% PWM")
+
+    en1.duty_u16(startup_duty)
+    en2.duty_u16(startup_duty)
+
+    # Check metal sensor during boost
+    start_time = time.ticks_ms()
+
+    while time.ticks_diff(
+        time.ticks_ms(), start_time
+    ) < int(BOOST_TIME * 1000):
+
+        if metal.value() == 0:
+            break
+
+        time.sleep_ms(5)
+
+    # =================================
+    # NORMAL FORWARD DRIVE
+    # =================================
+    if metal.value() == 1:
+
+        en1.duty_u16(drive_duty)
+        en2.duty_u16(drive_duty)
+
+        print("Driving at 55% PWM")
+        print("Searching for washer...")
+
+        while metal.value() == 1:
+            time.sleep_ms(5)
+
+    # =================================
+    # METAL DETECTED
+    # =================================
+    reverse_after_detection()
+
+# Final safety stop
+stop()
+servo.duty_u16(0)
+
+print("Program ended.")
