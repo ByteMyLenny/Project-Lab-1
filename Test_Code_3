@@ -1,0 +1,440 @@
+
+from machine import Pin, PWM, disable_irq, enable_irq
+import machine
+import time
+
+# =====================================
+# MOTOR 1 - L293D
+# =====================================
+en1 = PWM(Pin(14))
+in1 = Pin(15, Pin.OUT)
+in2 = Pin(16, Pin.OUT)
+
+# =====================================
+# MOTOR 2 - L293D
+# =====================================
+en2 = PWM(Pin(20))
+in3 = Pin(18, Pin.OUT)
+in4 = Pin(19, Pin.OUT)
+
+# =====================================
+# SERVO - GP22
+# =====================================
+servo = PWM(Pin(22))
+servo.freq(50)
+
+SERVO_START_ANGLE = 90
+SERVO_FORWARD_ANGLE = 170
+
+# =====================================
+# IR RECEIVER - GP13
+# =====================================
+ir = Pin(13, Pin.IN, Pin.PULL_UP)
+
+# Replace these after checking Thonny
+LEFT_COMMAND = 0x44
+RIGHT_COMMAND = 0x43
+
+# Turning settings
+TURN_SPEED = 60
+TURN_TIME = 0.35
+
+# IR timing buffer
+ir_pulses = []
+last_edge = time.ticks_us()
+last_ir_command = None
+
+# =====================================
+# PWM SETTINGS
+# =====================================
+en1.freq(1000)
+en2.freq(1000)
+
+STARTUP_SPEED = 100
+DRIVE_SPEED = 55
+REVERSE_SPEED = 60
+
+BOOST_TIME = 0.2
+REVERSE_TIME = 0.2
+REVERSE_BOOST_TIME = 0.05
+
+startup_duty = int(STARTUP_SPEED / 100 * 65535)
+drive_duty = int(DRIVE_SPEED / 100 * 65535)
+reverse_duty = int(REVERSE_SPEED / 100 * 65535)
+turn_duty = int(TURN_SPEED / 100 * 65535)
+
+# =====================================
+# METAL DETECTOR
+# =====================================
+metal = Pin(17, Pin.IN, Pin.PULL_UP)
+
+# 0 = Metal detected
+# 1 = No metal detected
+
+# =====================================
+# IR INTERRUPT
+# =====================================
+def ir_callback(pin):
+    global last_edge, ir_pulses
+
+    now = time.ticks_us()
+    duration = time.ticks_diff(now, last_edge)
+    last_edge = now
+
+    if duration > 12000:
+        ir_pulses = []
+
+    if len(ir_pulses) < 100:
+        ir_pulses.append((pin.value(), duration))
+
+
+# =====================================
+# NEC IR DECODER
+# =====================================
+def decode_nec(data):
+
+    start = -1
+
+    for i in range(len(data) - 1):
+
+        level1, duration1 = data[i]
+        level2, duration2 = data[i + 1]
+
+        if (level1 == 1 and
+            8000 < duration1 < 10000 and
+            level2 == 0 and
+            3500 < duration2 < 5500):
+
+            start = i + 2
+            break
+
+    if start < 0:
+        return None
+
+    bits = []
+
+    for i in range(32):
+
+        pos = start + 2 * i
+
+        if pos + 1 >= len(data):
+            return None
+
+        low_level, low_time = data[pos]
+        high_level, high_time = data[pos + 1]
+
+        if low_level != 1 or high_level != 0:
+            return None
+
+        if not (350 < low_time < 850):
+            return None
+
+        if 350 < high_time < 900:
+            bits.append(0)
+
+        elif 1300 < high_time < 2000:
+            bits.append(1)
+
+        else:
+            return None
+
+    value = 0
+
+    for i, bit in enumerate(bits):
+        value |= bit << i
+
+    command = (value >> 16) & 0xFF
+    command_inv = (value >> 24) & 0xFF
+
+    if (command ^ command_inv) != 0xFF:
+        return None
+
+    return command
+
+
+# =====================================
+# READ IR COMMAND
+# =====================================
+def read_ir():
+
+    global ir_pulses, last_ir_command
+
+    irq_state = disable_irq()
+
+    idle_time = time.ticks_diff(
+        time.ticks_us(), last_edge
+    )
+
+    if idle_time > 15000 and len(ir_pulses) >= 66:
+        data = ir_pulses[:]
+        ir_pulses = []
+    else:
+        data = None
+
+    enable_irq(irq_state)
+
+    if data is None:
+        return None
+
+    command = decode_nec(data)
+
+    if command is not None:
+
+        print("IR Command: 0x{:02X}".format(command))
+        last_ir_command = command
+
+    return command
+
+
+# =====================================
+# SERVO CONTROL
+# =====================================
+def set_servo_angle(angle):
+
+    angle = max(0, min(180, angle))
+
+    pulse_us = 1000 + (angle / 180) * 1000
+    duty = int(pulse_us / 20000 * 65535)
+
+    servo.duty_u16(duty)
+
+
+def activate_servo():
+
+    print("Activating servo...")
+
+    set_servo_angle(SERVO_FORWARD_ANGLE)
+    time.sleep(1)
+
+    set_servo_angle(SERVO_START_ANGLE)
+    time.sleep(1)
+
+    servo.duty_u16(0)
+
+    print("Servo sequence complete.")
+
+
+# =====================================
+# MOTOR FUNCTIONS
+# =====================================
+def stop():
+
+    en1.duty_u16(0)
+    en2.duty_u16(0)
+
+    in1.value(0)
+    in2.value(0)
+
+    in3.value(0)
+    in4.value(0)
+
+
+def forward():
+
+    in1.value(1)
+    in2.value(0)
+
+    in3.value(1)
+    in4.value(0)
+
+
+def reverse():
+
+    in1.value(0)
+    in2.value(1)
+
+    in3.value(0)
+    in4.value(1)
+
+
+# =====================================
+# TURN LEFT
+# =====================================
+def turn_left():
+
+    print("Turning LEFT")
+
+    # Motor 1 backward
+    in1.value(0)
+    in2.value(1)
+
+    # Motor 2 forward
+    in3.value(1)
+    in4.value(0)
+
+    en1.duty_u16(turn_duty)
+    en2.duty_u16(turn_duty)
+
+    start = time.ticks_ms()
+
+    while time.ticks_diff(
+        time.ticks_ms(), start
+    ) < int(TURN_TIME * 1000):
+
+        if metal.value() == 0:
+            return False
+
+        time.sleep_ms(5)
+
+    return True
+
+
+# =====================================
+# TURN RIGHT
+# =====================================
+def turn_right():
+
+    print("Turning RIGHT")
+
+    # Motor 1 forward
+    in1.value(1)
+    in2.value(0)
+
+    # Motor 2 backward
+    in3.value(0)
+    in4.value(1)
+
+    en1.duty_u16(turn_duty)
+    en2.duty_u16(turn_duty)
+
+    start = time.ticks_ms()
+
+    while time.ticks_diff(
+        time.ticks_ms(), start
+    ) < int(TURN_TIME * 1000):
+
+        if metal.value() == 0:
+            return False
+
+        time.sleep_ms(5)
+
+    return True
+
+
+# =====================================
+# REVERSE AFTER METAL DETECTION
+# =====================================
+def reverse_after_detection():
+
+    print("METAL DETECTED!")
+
+    stop()
+    time.sleep(0.2)
+
+    print("Reversing for 0.2 seconds...")
+
+    reverse()
+
+    reverse_start = time.ticks_ms()
+
+    en1.duty_u16(startup_duty)
+    en2.duty_u16(startup_duty)
+
+    time.sleep(REVERSE_BOOST_TIME)
+
+    en1.duty_u16(reverse_duty)
+    en2.duty_u16(reverse_duty)
+
+    while time.ticks_diff(
+        time.ticks_ms(), reverse_start
+    ) < int(REVERSE_TIME * 1000):
+
+        time.sleep_ms(1)
+
+    stop()
+
+    print("Reverse complete.")
+    print("Both motors stopped.")
+
+    activate_servo()
+
+
+# =====================================
+# START IR RECEIVER
+# =====================================
+ir.irq(
+    trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+    handler=ir_callback
+)
+
+# =====================================
+# MAIN PROGRAM
+# =====================================
+stop()
+servo.duty_u16(0)
+
+print("Robot starting...")
+print("IR receiver active on GP13")
+
+time.sleep(1)
+
+try:
+
+    if metal.value() == 0:
+        reverse_after_detection()
+
+    else:
+
+        forward()
+
+        print("Startup boost: 100% PWM")
+
+        en1.duty_u16(startup_duty)
+        en2.duty_u16(startup_duty)
+
+        start_time = time.ticks_ms()
+
+        while time.ticks_diff(
+            time.ticks_ms(), start_time
+        ) < int(BOOST_TIME * 1000):
+
+            if metal.value() == 0:
+                break
+
+            time.sleep_ms(5)
+
+        if metal.value() == 1:
+
+            en1.duty_u16(drive_duty)
+            en2.duty_u16(drive_duty)
+
+            print("Driving at 55% PWM")
+            print("Searching for washer...")
+
+            while metal.value() == 1:
+
+                command = read_ir()
+
+                if command == LEFT_COMMAND:
+
+                    if not turn_left():
+                        break
+
+                    forward()
+                    en1.duty_u16(drive_duty)
+                    en2.duty_u16(drive_duty)
+
+                    print("Resuming forward drive")
+
+                elif command == RIGHT_COMMAND:
+
+                    if not turn_right():
+                        break
+
+                    forward()
+                    en1.duty_u16(drive_duty)
+                    en2.duty_u16(drive_duty)
+
+                    print("Resuming forward drive")
+
+                time.sleep_ms(5)
+
+        reverse_after_detection()
+
+finally:
+
+    stop()
+    servo.duty_u16(0)
+    ir.irq(handler=None)
+
+    print("Program ended.")
