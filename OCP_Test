@@ -1,0 +1,137 @@
+from machine import Pin, PWM
+import time
+
+# =====================================
+# PIN CONFIGURATION
+# =====================================
+en1 = PWM(Pin(14))
+in1 = Pin(15, Pin.OUT)
+in2 = Pin(16, Pin.OUT)
+
+button = Pin(27, Pin.IN, Pin.PULL_UP)
+motor_fault = Pin(13, Pin.IN)
+
+# =====================================
+# USER ADJUSTABLE SETTINGS
+# =====================================
+PWM_LEVELS = [20, 40, 60, 80, 100]
+
+PWM_FREQ = 1000
+TEST_TIME_MS = 2000
+PAUSE_TIME_MS = 500
+
+# Fault debouncing settings
+FAULT_ACTIVE = 0
+FAULT_SAMPLES = 2
+SAMPLE_TIME_MS = 10
+
+en1.freq(PWM_FREQ)
+
+# =====================================
+# MOTOR FUNCTIONS
+# =====================================
+def stop_motor():
+    en1.duty_u16(0)
+    in1.value(0)
+    in2.value(0)
+
+def forward(speed):
+    in1.value(1)
+    in2.value(0)
+
+    duty = int((speed / 100) * 65535)
+    en1.duty_u16(duty)
+
+# =====================================
+# PWM TEST WITH DEBOUNCING
+# =====================================
+def run_test():
+
+    print("\n========================")
+    print("Starting OCP PWM Test")
+    print("========================")
+
+    for speed in PWM_LEVELS:
+
+        zero_count = 0
+
+        print("\nTesting PWM:", speed, "%")
+
+        forward(speed)
+
+        start = time.ticks_ms()
+
+        while time.ticks_diff(
+            time.ticks_ms(), start
+        ) < TEST_TIME_MS:
+
+            status = motor_fault.value()
+
+            if status == FAULT_ACTIVE:
+                zero_count += 1
+            else:
+                zero_count = 0
+
+            print("PWM:", speed,
+                  "% | GP13:", status,
+                  "| Consecutive zeros:", zero_count)
+
+            # Confirm fault after enough zeros
+            if zero_count >= FAULT_SAMPLES:
+
+                stop_motor()
+
+                print("\n========================")
+                print("OVERCURRENT FAULT DETECTED!")
+                print("PWM at fault:", speed, "%")
+                print("Consecutive zeros:", zero_count)
+                print("========================")
+
+                return
+
+            time.sleep_ms(SAMPLE_TIME_MS)
+
+        stop_motor()
+
+        print("Completed PWM:", speed, "%")
+        print("GP13 after stopping:",
+              motor_fault.value())
+
+        time.sleep_ms(PAUSE_TIME_MS)
+
+    stop_motor()
+
+    print("\n========================")
+    print("PWM TEST COMPLETED")
+    print("No confirmed fault detected")
+    print("========================")
+
+# =====================================
+# MAIN PROGRAM
+# =====================================
+stop_motor()
+
+print("OCP PWM Test Ready")
+print("Press GP27 button to start")
+
+try:
+    while True:
+
+        if button.value() == 0:
+
+            time.sleep_ms(30)
+
+            if button.value() == 0:
+
+                run_test()
+
+                print("\nPress button to test again")
+
+                while button.value() == 0:
+                    time.sleep_ms(10)
+
+        time.sleep_ms(10)
+
+finally:
+    stop_motor()
+    en1.deinit()
