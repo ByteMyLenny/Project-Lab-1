@@ -1,0 +1,366 @@
+
+from machine import Pin, PWM, time_pulse_us
+import time
+import math
+
+# =====================================
+# MOTOR DRIVER - L293D
+# =====================================
+en1 = PWM(Pin(13))
+in1 = Pin(14, Pin.OUT)
+in2 = Pin(15, Pin.OUT)
+
+in3 = Pin(16, Pin.OUT)
+in4 = Pin(17, Pin.OUT)
+en2 = PWM(Pin(18))
+
+en1.freq(1000)
+en2.freq(1000)
+
+STARTUP_SPEED = 100
+DRIVE_SPEED = 70
+BOOST_TIME = 0.2
+TURN_TIME = 0.5
+
+# Reverse either value to -1 if needed
+MOTOR1_DIRECTION = 1
+MOTOR2_DIRECTION = 1
+
+# =====================================
+# IR RECEIVER - GP10
+# =====================================
+ir = Pin(10, Pin.IN, Pin.PULL_UP)
+
+# Replace with actual IR command values
+LEFT_CODE = 0xC
+RIGHT_CODE = 0x18
+
+# =====================================
+# TCS3200 COLOR SENSOR
+# =====================================
+s0 = Pin(0, Pin.OUT)
+s1 = Pin(1, Pin.OUT)
+s2 = Pin(2, Pin.OUT)
+s3 = Pin(3, Pin.OUT)
+color_out = Pin(4, Pin.IN)
+oe = Pin(5, Pin.OUT)
+
+oe.value(0)
+
+# 20% frequency scaling
+s0.value(1)
+s1.value(0)
+
+# =====================================
+# MG996R SERVO - GP19
+# =====================================
+servo = PWM(Pin(19))
+servo.freq(50)
+
+ARM_UP_US = 1500
+ARM_DOWN_US = 1000
+ARM_DELAY = 1.0
+
+CYAN_COOLDOWN_MS = 3000
+
+# =====================================
+# COLOR SENSOR SETTINGS
+# =====================================
+CALIBRATION_SAMPLES = 30
+PREP_TIME = 5
+CYAN_THRESHOLD = 0.35
+
+# =====================================
+# MOTOR FUNCTIONS
+# =====================================
+def set_speed(speed):
+    duty = int(speed * 65535 / 100)
+    en1.duty_u16(duty)
+    en2.duty_u16(duty)
+
+def stop_motors():
+    set_speed(0)
+    in1.value(0)
+    in2.value(0)
+    in3.value(0)
+    in4.value(0)
+
+def set_motor_direction(pair, direction):
+    if pair == 1:
+        direction *= MOTOR1_DIRECTION
+        a, b = in1, in2
+    else:
+        direction *= MOTOR2_DIRECTION
+        a, b = in3, in4
+
+    a.value(1 if direction > 0 else 0)
+    b.value(1 if direction < 0 else 0)
+
+def drive(left_direction, right_direction):
+    stop_motors()
+
+    set_motor_direction(1, left_direction)
+    set_motor_direction(2, right_direction)
+
+    set_speed(STARTUP_SPEED)
+    time.sleep(BOOST_TIME)
+
+    set_speed(DRIVE_SPEED)
+    time.sleep(max(0, TURN_TIME - BOOST_TIME))
+
+    stop_motors()
+
+def turn_left():
+    print("TURNING LEFT")
+    drive(-1, 1)
+
+def turn_right():
+    print("TURNING RIGHT")
+    drive(1, -1)
+
+# =====================================
+# SERVO FUNCTIONS
+# =====================================
+def set_servo_pulse(pulse_us):
+    duty = int(pulse_us * 65535 / 20000)
+    servo.duty_u16(duty)
+
+def move_arm():
+    print("CYAN DETECTED - LOWERING ARM")
+    set_servo_pulse(ARM_DOWN_US)
+    time.sleep(ARM_DELAY)
+
+    print("RAISING ARM")
+    set_servo_pulse(ARM_UP_US)
+    time.sleep(ARM_DELAY)
+
+    print("ARM SEQUENCE COMPLETE")
+
+# =====================================
+# COLOR SENSOR FUNCTIONS
+# =====================================
+def read_frequency(s2_val, s3_val):
+    s2.value(s2_val)
+    s3.value(s3_val)
+
+    time.sleep_ms(30)
+
+    high = time_pulse_us(color_out, 1, 100000)
+    low = time_pulse_us(color_out, 0, 100000)
+
+    if high < 0 or low < 0:
+        return None
+
+    period = high + low
+
+    if period <= 0:
+        return None
+
+    return 1000000 / period
+
+def read_rgb():
+    red = read_frequency(0, 0)
+    green = read_frequency(1, 1)
+    blue = read_frequency(0, 1)
+
+    if red is None or green is None or blue is None:
+        return None
+
+    return (red, green, blue)
+
+# =====================================
+# COLOR CALIBRATION
+# =====================================
+def calibrate(name):
+    print("\nPlace", name, "under sensor")
+    print("Starting in", PREP_TIME, "seconds")
+    time.sleep(PREP_TIME)
+
+    totals = [0, 0, 0]
+    valid = 0
+
+    while valid < CALIBRATION_SAMPLES:
+        rgb = read_rgb()
+
+        if rgb is None:
+            print("Sensor timeout - retrying")
+            time.sleep_ms(100)
+            continue
+
+        for i in range(3):
+            totals[i] += rgb[i]
+
+        valid += 1
+
+    average = tuple(
+        value / CALIBRATION_SAMPLES
+        for value in totals
+    )
+
+    print(name, "calibrated:", average)
+    return average
+
+# =====================================
+# COLOR NORMALIZATION
+# =====================================
+def normalize(rgb):
+    result = []
+
+    for i in range(3):
+        span = white[i] - black[i]
+
+        if abs(span) < 1:
+            span = 1
+
+        result.append(
+            (rgb[i] - black[i]) / span
+        )
+
+    return tuple(result)
+
+# =====================================
+# NEC IR DECODER
+# =====================================
+def read_ir_command():
+    if ir.value() != 0:
+        return None
+
+    leader_low = time_pulse_us(ir, 0, 12000)
+
+    if not 8000 <= leader_low <= 10000:
+        return None
+
+    leader_high = time_pulse_us(ir, 1, 6000)
+
+    if not 4000 <= leader_high <= 5000:
+        return None
+
+    data = 0
+
+    for i in range(32):
+        low = time_pulse_us(ir, 0, 1500)
+        high = time_pulse_us(ir, 1, 3000)
+
+        if not 350 <= low <= 850:
+            return None
+
+        if 350 <= high <= 900:
+            bit = 0
+        elif 1300 <= high <= 2000:
+            bit = 1
+        else:
+            return None
+
+        data |= bit << i
+
+    command = (data >> 16) & 0xFF
+    inverse = (data >> 24) & 0xFF
+
+    if (command ^ inverse) != 0xFF:
+        return None
+
+    return command
+
+# =====================================
+# MAIN PROGRAM
+# =====================================
+stop_motors()
+set_servo_pulse(ARM_UP_US)
+
+try:
+    white = calibrate("WHITE")
+    cyan = calibrate("CYAN")
+    black = calibrate("BLACK")
+
+    cyan_reference = normalize(cyan)
+
+    print("\n==========================")
+    print("SYSTEM READY")
+    print("IR MOTOR CONTROL ACTIVE")
+    print("CYAN DETECTION ACTIVE")
+    print("==========================")
+
+    last_cyan_time = (
+        time.ticks_ms() - CYAN_COOLDOWN_MS
+    )
+    cyan_latched = False
+
+    while True:
+
+        # =================================
+        # IR MOTOR CONTROL
+        # =================================
+        command = read_ir_command()
+
+        if command is not None:
+            print("IR COMMAND:", hex(command))
+
+            if LEFT_CODE is not None and command == LEFT_CODE:
+                turn_left()
+
+            elif RIGHT_CODE is not None and command == RIGHT_CODE:
+                turn_right()
+
+        # =================================
+        # CYAN DETECTION
+        # =================================
+        rgb = read_rgb()
+
+        if rgb is None:
+            print("COLOR SENSOR: NO SIGNAL")
+
+        else:
+            normalized = normalize(rgb)
+
+            distance = math.sqrt(
+                sum(
+                    (normalized[i] - cyan_reference[i]) ** 2
+                    for i in range(3)
+                )
+            )
+
+            cyan_detected = (
+                distance <= CYAN_THRESHOLD
+            )
+
+            if cyan_detected:
+                print("CYAN DETECTED")
+            else:
+                print("NO CYAN DETECTED")
+
+            print(
+                "RGB:",
+                tuple(round(v, 1) for v in rgb),
+                "| Cyan distance:",
+                round(distance, 3)
+            )
+
+            now = time.ticks_ms()
+
+            if cyan_detected:
+                elapsed = time.ticks_diff(
+                    now, last_cyan_time
+                )
+
+                if (
+                    not cyan_latched
+                    and elapsed >= CYAN_COOLDOWN_MS
+                ):
+                    stop_motors()
+                    move_arm()
+                    last_cyan_time = time.ticks_ms()
+                    cyan_latched = True
+
+            else:
+                cyan_latched = False
+
+        time.sleep_ms(50)
+
+except KeyboardInterrupt:
+    print("\nProgram stopped")
+
+finally:
+    stop_motors()
+    servo.deinit()
+    oe.value(1)
+    print("SYSTEM SHUTDOWN")
