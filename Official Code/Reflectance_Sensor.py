@@ -5,10 +5,10 @@ from utime import sleep, sleep_us
 MUX_A = Pin(18, Pin.OUT, value=0)
 MUX_B = Pin(19, Pin.OUT, value=0)
 MUX_C = Pin(20, Pin.OUT, value=0)
-MUX_OUT = ADC(26)            # CD4051 COM pin → GP26 (change if wired elsewhere)
+MUX_OUT = ADC(26)            # CD4051 COM pin → GP26 (physical pin 31)
 
-TAPE_THRESHOLD = 20000       # set this with calibrate()
-TAPE_VALUE_IS_LOWER_THAN_FLOOR = True           # True if tape return value is lower than floor
+THRESHOLDS = [20000] * 8                 # one per sensor; set with calibrate()
+TAPE_VALUE_IS_LOWER_THAN_FLOOR = True    # True if tape reads lower than floor
 
 def select(ch):
     """Point the mux at sensor channel 0–7."""
@@ -20,6 +20,7 @@ def select(ch):
 def read(ch, samples=4):
     """Averaged reading of one sensor (0–65535)."""
     select(ch)
+    MUX_OUT.read_u16()       # throw away the first reading after switching
     total = 0
     for _ in range(samples):
         total += MUX_OUT.read_u16()
@@ -28,24 +29,26 @@ def read(ch, samples=4):
 def read_all():
     return [read(ch) for ch in range(8)]
 
-def is_tape(value):
-    return value < TAPE_THRESHOLD if TAPE_VALUE_IS_LOWER_THAN_FLOOR else value > TAPE_THRESHOLD
+def is_tape(value, ch):
+    if TAPE_VALUE_IS_LOWER_THAN_FLOOR:
+        return value < THRESHOLDS[ch]
+    return value > THRESHOLDS[ch]
 
 def tape_sides():
     """Returns (left, right): True if that half of the sensor sees tape."""
     values = read_all()
-    left = any(is_tape(v) for v in values[:4])
-    right = any(is_tape(v) for v in values[4:])
-    return left, right
+    hits = [is_tape(v, ch) for ch, v in enumerate(values)]
+    return any(hits[:4]), any(hits[4:])
 
 def calibrate():
-    """Prints readings over the floor and the tape, and a suggested threshold."""
+    """Prints per-sensor readings over floor and tape, plus values to copy in."""
     print("Hold sensor over FLOOR...")
     sleep(3)
-    floor = sum(read_all()) // 8
+    floor = read_all()
     print("Hold sensor over TAPE...")
     sleep(3)
-    tape = sum(read_all()) // 8
-    print("Floor avg:", floor, " Tape avg:", tape)
-    print("TAPE_THRESHOLD =", (floor + tape) // 2)
-    print("TAPE_IS_LOW =", tape < floor)
+    tape = read_all()
+    print("Floor:", floor)
+    print("Tape: ", tape)
+    print("THRESHOLDS =", [(f + t) // 2 for f, t in zip(floor, tape)])
+    print("TAPE_VALUE_IS_LOWER_THAN_FLOOR =", sum(tape) < sum(floor))

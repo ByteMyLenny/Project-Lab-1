@@ -1,13 +1,14 @@
+from machine import Pin, time_pulse_us
 from MotorDriver import movement
 import Reflectance_Sensor as rs
+import ColorSensor as cs
+from Servo import set_angle, set_pulse
 from utime import sleep
+import sys
+import select
 
-#Don't Forget To Run CALIBRATE_Tape.py For The Tape!!!
-left, right = rs.tape_sides()
+electromagnet = Pin(8, Pin.OUT)
 
-rs.calibrate()
-while True:
-    print(rs.read_all())
-    sleep(0.5)
-    if left or right:
-        print("TAPE!")
+movement("F", 50)
+sleep(5)
+movement("S")
