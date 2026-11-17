@@ -1,14 +1,8 @@
-from machine import Pin, time_pulse_us
-from MotorDriver import movement
-import Reflectance_Sensor as rs
-import ColorSensor as cs
-from Servo import set_angle, set_pulse
-from utime import sleep
-import sys
-import select
+import IR_Receiver as irr, ProximitySensors as ps, ColorSensor as cs, MotorDriver as driver, Servo as servo, Team
+from utime import sleep_ms
 
-electromagnet = Pin(8, Pin.OUT)
+ir = irr.IRReceiver(pin=9)
 
-movement("F", 50)
-sleep(5)
-movement("S")
+while True:
+    print("Raw IR: ", ir.sees_ir(), "Formated Signal: ", ir.sees_signal())
+    sleep_ms(200)
