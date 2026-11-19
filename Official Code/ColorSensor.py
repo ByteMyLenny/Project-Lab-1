@@ -17,21 +17,21 @@ WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}   # loaded from the file, or set
 # {"FLOOR": [[r, g, b, bright], ...], "CYAN": [...], ...}
 SAMPLES = {}
 
-MAX_DISTANCE = 0.15       # a sample farther than this doesn't get a vote
-BRIGHTNESS_WEIGHT = 0.5   # how much brightness counts vs. color
+MAX_DISTANCE = 0.03       # a sample farther than this doesn't get a vote
+BRIGHTNESS_WEIGHT = 0  # how much brightness counts vs. color
 K = 5                     # how many nearest samples vote in classify()
 
 # ---------- Reading ----------
-def read_filter(name, cycles=10):
+def read_filter(name, cycles=4):
     """Average frequency (Hz) through one filter."""
     S2.value(FILTERS[name][0])
     S3.value(FILTERS[name][1])
-    time.sleep_ms(20)
+    time.sleep_ms(2)
     total = 0
     good = 0
     for _ in range(cycles):
-        high = time_pulse_us(OUT, 1, 100000)
-        low = time_pulse_us(OUT, 0, 100000)
+        high = time_pulse_us(OUT, 1, 20000)
+        low = time_pulse_us(OUT, 0, 20000)
         if high > 0 and low > 0:          # skip timeouts
             total += high + low
             good += 1
@@ -115,14 +115,15 @@ def distance(a, b):
     d = 0
     for i in range(3):
         d += (a[i] - b[i]) ** 2
-    d += (BRIGHTNESS_WEIGHT * (a[3] - b[3])) ** 2
+    bright = max(a[3], b[3], 1e-6)
+    d += (BRIGHTNESS_WEIGHT * (a[3] - b[3]) / bright) ** 2   # relative brightness difference
     return d ** 0.5
 
 def classify(k=K):
     """The K closest samples vote. Returns the winning name, or "UNKNOWN"."""
     if not SAMPLES:
         return "NO SAMPLES (run teach mode)"
-    f = sample(3)
+    f = sample(1)
     near = []
     for name, lst in SAMPLES.items():
         for s in lst:
